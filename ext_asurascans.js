@@ -1,18 +1,20 @@
 // ID: ext_asurascans
 // NAME: Asura Scans
-// VERSION: 1.0.3
+// VERSION: 1.0.0
 // TYPE: comic
 // COLOR: #9333EA
-// ICON: https://asurascans.com
+// ICON: https://asurascans.com/favicon.ico
 // REFERER: https://asurascans.com
 
 var ASURA_BASE = "https://asurascans.com";
 var ASURA_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
   "Referer": "https://asurascans.com",
-  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9"
 };
+
+// ---------------------------------------------------------------- helpers
 
 async function asuraFetch(url) {
   try {
@@ -52,6 +54,7 @@ function decodeHtml(str) {
   return decodeEntities(s).replace(/\s+/g, " ").trim();
 }
 
+// Un-escape JSON-in-script payloads (\" \/ \u0026 ...)
 function unescapeJs(s) {
   return String(s == null ? "" : s)
     .replace(/\\u([0-9a-fA-F]{4})/g, function (m, h) { return String.fromCharCode(parseInt(h, 16)); })
@@ -64,12 +67,6 @@ function absUrl(u) {
   if (!u) return "";
   u = decodeEntities(String(u)).trim();
   if (!u || /^(data|javascript|blob):/i.test(u)) return "";
-  if (u.indexOf("/_image") === 0 || u.indexOf("/_next/image") === 0) {
-    var hm = /[?&](?:href|url)=([^&]+)/i.exec(u);
-    if (hm) {
-      try { u = decodeURIComponent(hm[1]); } catch (e) {}
-    }
-  }
   if (/^https?:\/\//i.test(u)) return u;
   if (u.indexOf("//") === 0) return "https:" + u;
   if (u.charAt(0) === "/") return ASURA_BASE + u;
@@ -103,6 +100,7 @@ function bestFromSrcset(srcset) {
   return best;
 }
 
+// data-src -> data-lazy-src -> srcset (highest res) -> src
 function imgUrl(tag) {
   var v = getAttr(tag, "data-src") || getAttr(tag, "data-lazy-src");
   if (!v) v = bestFromSrcset(getAttr(tag, "data-srcset") || getAttr(tag, "srcset"));
@@ -125,7 +123,6 @@ function cleanTitle(t) {
   t = decodeHtml(t);
   t = t.replace(/^(.+?)\s+\d{1,2}\.\d\s+\1$/, "$1");
   t = t.replace(/\s*Chapter\s*[\d.]+.*$/i, "");
-  t = t.replace(/\s+\d+\s+Chs\.?.*$/i, "");
   t = t.replace(/\s+\d{1,2}\.\d$/, "");
   t = t.replace(/^(.+?)\s+\1$/, "$1");
   return t.trim();
@@ -137,51 +134,34 @@ function titleFromSlug(slug) {
 }
 
 function unwrapProp(v) {
+  // Astro island props encode values as [type, value]
   if (Array.isArray(v) && v.length === 2 && typeof v[0] === "number") return v[1];
   return v;
 }
 
+// ---------------------------------------------------------- list parsing
+
 function parseListFromHtml(html) {
   var map = {}, order = [];
-  var re = /href\s*=\s*["']((?:https?:\/\/(?:www\.)?asurascans\.com)?\/comics\/([^\/"'?#]+))\/?["']/gi, m;
-
+  var re = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi, m;
   while ((m = re.exec(html))) {
-    var slug = "/comics/" + m[2];
-    if (slug === "/comics") continue;
+    var attrs = m[1], inner = m[2];
+    var href = getAttr("<a " + attrs, "href");
+    if (!href) continue;
+    if (!/^(?:https?:\/\/(?:www\.)?asurascans\.com)?\/comics\/[^\/?#]+\/?(?:[?#].*)?$/i.test(decodeEntities(href))) continue;
+    var slug = toSlug(href);
+    if (!slug || slug === "/comics") continue;
 
-    var start = Math.max(0, m.index - 900);
-    var end = Math.min(html.length, m.index + 900);
-    var windowHtml = html.slice(start, end);
+    var cover = "", alt = "";
+    var im = /<img\b[^>]*>/i.exec(inner);
+    if (im) { cover = imgUrl(im[0]); alt = decodeHtml(getAttr(im[0], "alt")); }
+    var hm = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i.exec(inner);
+    var title = alt || decodeHtml(getAttr("<a " + attrs, "title")) || (hm ? cleanTitle(hm[1]) : "") || cleanTitle(inner);
 
-    if (!map[slug]) {
-      map[slug] = { slug: slug, title: "", cover: "" };
-      order.push(slug);
-    }
-
-    var afterLink = html.slice(m.index, Math.min(html.length, m.index + 600));
-    var aClose = afterLink.indexOf("</a>");
-    var aInner = aClose > 0 ? afterLink.slice(afterLink.indexOf(">") + 1, aClose) : "";
-
-    var tCandidate = cleanTitle(aInner);
-    if (tCandidate && tCandidate.length > 1 && !/^(read|bookmark|chapter|chs)/i.test(tCandidate) && !map[slug].title) {
-      map[slug].title = tCandidate;
-    }
-
-    if (!map[slug].cover) {
-      var imgSource = /<img\b[^>]*>/i.exec(aInner) || /<img\b[^>]*>/i.exec(windowHtml);
-      if (imgSource) {
-        var cUrl = imgUrl(imgSource[0]);
-        if (cUrl && !/logo|icon|avatar/i.test(cUrl)) {
-          map[slug].cover = cUrl;
-        }
-        if (!map[slug].title) {
-          var alt = cleanTitle(getAttr(imgSource[0], "alt"));
-          if (alt && alt.length > 1) map[slug].title = alt;
-        }
-      }
-    }
+    if (!map[slug]) { map[slug] = { slug: slug, title: "", cover: "" }; order.push(slug); }
+    if (title && !map[slug].title) map[slug].title = title;
+    if (cover && !map[slug].cover) map[slug].cover = cover;
   }
-
   var out = [];
   for (var i = 0; i < order.length; i++) {
     var it = map[order[i]];
@@ -241,8 +221,10 @@ function buildBrowseUrl(page, queryKey, query, filters) {
       params.push(keys[i] + "=" + encodeURIComponent(v));
     }
   }
-  return ASURA_BASE + "/browse/comics?" + params.join("&");
+  return ASURA_BASE + "/browse?" + params.join("&");
 }
+
+// -------------------------------------------------------- detail parsing
 
 function labelValue(html, labels) {
   var re = new RegExp("(?:>|^)\\s*(?:" + labels + ")s?\\s*:?\\s*<\\/[^>]*>[\\s\\S]{0,250}?>\\s*([^<>]{2,80}?)\\s*<", "i");
@@ -272,6 +254,7 @@ function extractChapters(html, slug) {
     chapters.push({ id: id, title: text, date: date });
   }
 
+  // Fallback: chapter URLs that only exist inside script payloads
   var txt = unescapeJs(decodeEntities(html));
   var re2 = /\/comics\/([a-z0-9][a-z0-9_-]*)\/chapter\/([A-Za-z0-9._-]+)/g, m2;
   while ((m2 = re2.exec(txt))) {
@@ -286,140 +269,165 @@ function extractChapters(html, slug) {
 
 function chapterNumber(ch) {
   var m = /\/chapter\/([^\/?#]+)/i.exec(ch.id);
-var seg = m ? m[1].replace(/^chapter-?/i, "") : "";
-if (/^\d+-\d+$/.test(seg)) seg = seg.replace("-", ".");
-var n = /^\d+(?:.\d+)?$/.test(seg) ? parseFloat(seg) : NaN;
-if (isNaN(n)) {
-var t = /(\d+(?:.\d+)?)/.exec(ch.title);
-if (t) n = parseFloat(t[1]);
-else if (/prolog|prelude/i.test(ch.title)) n = -1;
-else n = Number.MAX_SAFE_INTEGER;
+  var seg = m ? m[1].replace(/^chapter-?/i, "") : "";
+  if (/^\d+-\d+$/.test(seg)) seg = seg.replace("-", ".");
+  var n = /^\d+(?:\.\d+)?$/.test(seg) ? parseFloat(seg) : NaN;
+  if (isNaN(n)) {
+    var t = /(\d+(?:\.\d+)?)/.exec(ch.title);
+    if (t) n = parseFloat(t[1]);
+    else if (/prolog|prelude/i.test(ch.title)) n = -1;
+    else n = Number.MAX_SAFE_INTEGER;
+  }
+  return n;
 }
-return n;
-}
+
 function sortChaptersAsc(chapters) {
-var arr = chapters.map(function (c, i) { return { c: c, n: chapterNumber(c), i: i }; });
-arr.sort(function (a, b) { return a.n !== b.n ? a.n - b.n : a.i - b.i; });
-return arr.map(function (x) { return x.c; });
+  var arr = chapters.map(function (c, i) { return { c: c, n: chapterNumber(c), i: i }; });
+  arr.sort(function (a, b) { return a.n !== b.n ? a.n - b.n : a.i - b.i; });
+  return arr.map(function (x) { return x.c; });
 }
+
+// ------------------------------------------------------- image filtering
+
 function isJunkImage(u) {
-var l = String(u).toLowerCase();
-var bad = ["logo", "favicon", "avatar", "discord", "donate", "default-pp", "toraka", "patreon", "ko-fi", "badge"];
-for (var i = 0; i < bad.length; i++) if (l.indexOf(bad[i]) >= 0) return true;
-return /.(svg|gif|ico)(?|#|$)/.test(l);
+  var l = String(u).toLowerCase();
+  var bad = ["logo", "icon", "avatar", "banner", "discord", "donate", "thumbnail", "/covers/", "default-pp", "toraka"];
+  for (var i = 0; i < bad.length; i++) if (l.indexOf(bad[i]) >= 0) return true;
+  return /\.(svg|gif)(\?|#|$)/.test(l);
 }
+
+// ------------------------------------------------------------- extension
+
 var KonmikExtension = {
-async getList(page, query, filters) {
-try {
-page = parseInt(page, 10) || 1;
-query = (query || "").trim();
-var list = [];
-if (query) {
-var keys = ["search", "q", "name", "query"];
-for (var i = 0; i < keys.length && list.length === 0; i++) {
-list = parseList(await asuraFetch(buildBrowseUrl(page, keys[i], query, filters)));
-}
-if (list.length === 0) {
-var q = query.toLowerCase(), all = [];
-for (var p = 1; p <= 3; p++) {
-all = all.concat(parseList(await asuraFetch(buildBrowseUrl(p, "", "", filters))));
-}
-list = all.filter(function (it) { return it.title.toLowerCase().indexOf(q) >= 0; });
-}
-} else {
-list = parseList(await asuraFetch(buildBrowseUrl(page, "", "", filters)));
-if (list.length === 0) {
-list = parseList(await asuraFetch(ASURA_BASE + "/browse?page=" + page));
-}
-if (list.length === 0 && page === 1) {
-list = parseList(await asuraFetch(ASURA_BASE + "/"));
-}
-}
-return dedupeBySlug(list);
-} catch (e) {
-return [];
-}
-},
-async getDetail(slug) {
-var empty = { title: "", cover: "", author: "", status: "Ongoing", genres: [], synopsis: "", chapters: [] };
-try {
-var path = toSlug(slug);
-var html = await asuraFetch(absUrl(path));
-if (!html) return empty;
-var clean = stripScripts(html);
-var text = decodeHtml(clean);
-var json = unescapeJs(decodeEntities(html));
-var title = "";
-var h1 = /<h1[^>]>([\s\S]?)</h1>/i.exec(clean);
-if (h1) title = decodeHtml(h1[1]);
-if (!title) title = getMeta(html, "og:title").replace(/\s*[-|]\sAsura Scans.$/i, "");
-if (!title) title = titleFromSlug(path);
-var cover = absUrl(getMeta(html, "og:image"));
-if (!cover) {
-var cm = /<img\b[^>]alt=["'][^"']["'][^>]*>/i.exec(clean);
-if (cm) cover = imgUrl(cm[0]);
-}
-var author = labelValue(clean, "Author|Studio|Artist|Creator");
-if (!author) {
-var am = /"(?:author|studio)"\s*:\s*"([^"]{2,80})"/i.exec(json);
-if (am) author = decodeHtml(am[1]);
-}
-var status = "Ongoing";
-var sm = /Status\s*[:-]?\s*(Ongoing|Completed|Hiatus|Dropped|Cancelled|Season End|Coming Soon)/i.exec(text) ||
-/\b(Ongoing|Completed|Hiatus|Dropped|Cancelled|Season End)\b/i.exec(text);
-if (sm) status = sm[1].charAt(0).toUpperCase() + sm[1].slice(1).toLowerCase();
-var genres = [], gseen = {}, gre = /<a\b[^>]href="[^"][?&]genres=[^"]"[^>]>([\s\S]*?)</a>/gi, gm;
-while ((gm = gre.exec(clean))) {
-var g = decodeHtml(gm[1]).replace(/,$/, "").trim();
-if (g && !gseen[g.toLowerCase()]) { gseen[g.toLowerCase()] = 1; genres.push(g); }
-}
-var synopsis = "";
-var sy = /<(?:div|p|section)[^>](?:id|class)="[^"](?:synopsis|description)[^"]"[^>]>([\s\S]?)</(?:div|p|section)>/i.exec(clean);
-if (sy) synopsis = decodeHtml(sy[1]);
-if (!synopsis) {
-var sy2 = />\sSynopsis\s*</[^>]+>([\s\S]{0,3000}?)</(?:div|section)>/i.exec(clean);
-if (sy2) synopsis = decodeHtml(sy2[1]);
-}
-if (!synopsis) synopsis = decodeHtml(getMeta(html, "og:description") || getMeta(html, "description"));
-if (!synopsis) {
-var dm = /"(?:description|synopsis)"\s*:\s*"((?:[^"\]|\.)*)"/i.exec(json);
-if (dm) synopsis = decodeHtml(dm[1].replace(/\n/g, " "));
-}
-var chapters = sortChaptersAsc(extractChapters(html, path));
-return {
-title: title,
-cover: cover,
-author: author,
-status: status,
-genres: genres,
-synopsis: synopsis,
-chapters: chapters
-};
-} catch (e) {
-return empty;
-}
-},
-async getChapterImages(chapterId) {
-try {
-var html = await asuraFetch(absUrl(chapterId));
-if (!html) return [];
-var out = [], seen = {};
-var push = function (u) {
-u = absUrl(u);
-if (!u || seen[u] || isJunkImage(u)) return;
-seen[u] = 1;
-out.push(u);
-};
-var im, re = /<img\b[^>]*>/gi;
-while ((im = re.exec(html))) push(imgUrl(im[0]));
-if (out.length < 3) {
-var txt = unescapeJs(decodeEntities(html));
-var re2 = /https?://[^\s"'\<>()]+?.(?:webp|jpe?g|png|avif)(?:?[^\s"'\<>()]*)?/gi, m2;
-while ((m2 = re2.exec(txt))) push(m2[0]);
-}
-return out;
-} catch (e) {
-return [];
-}
-}
+  async getList(page, query, filters) {
+    try {
+      page = parseInt(page, 10) || 1;
+      query = (query || "").trim();
+      var list = [];
+
+      if (query) {
+        var keys = ["search", "q", "query"];
+        for (var i = 0; i < keys.length && list.length === 0; i++) {
+          list = parseList(await asuraFetch(buildBrowseUrl(page, keys[i], query, filters)));
+        }
+        if (list.length === 0) {
+          // Fallback: client-side filtering of the first browse pages
+          var q = query.toLowerCase(), all = [];
+          for (var p = 1; p <= 3; p++) {
+            all = all.concat(parseList(await asuraFetch(buildBrowseUrl(p, "", "", filters))));
+          }
+          list = all.filter(function (it) { return it.title.toLowerCase().indexOf(q) >= 0; });
+        }
+      } else {
+        list = parseList(await asuraFetch(buildBrowseUrl(page, "", "", filters)));
+        if (list.length === 0 && page === 1) list = parseList(await asuraFetch(ASURA_BASE + "/"));
+      }
+      return dedupeBySlug(list);
+    } catch (e) {
+      return [];
+    }
+  },
+
+  async getDetail(slug) {
+    var empty = { title: "", cover: "", author: "", status: "Ongoing", genres: [], synopsis: "", chapters: [] };
+    try {
+      var path = toSlug(slug);
+      var html = await asuraFetch(absUrl(path));
+      if (!html) return empty;
+      var clean = stripScripts(html);
+      var text = decodeHtml(clean);
+      var json = unescapeJs(decodeEntities(html));
+
+      // Title
+      var title = "";
+      var h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(clean);
+      if (h1) title = decodeHtml(h1[1]);
+      if (!title) title = getMeta(html, "og:title").replace(/\s*[-|]\s*Asura Scans.*$/i, "");
+      if (!title) title = titleFromSlug(path);
+
+      // Cover
+      var cover = absUrl(getMeta(html, "og:image"));
+      if (!cover) {
+        var cm = /<img\b[^>]*\/covers\/[^>]*>/i.exec(clean);
+        if (cm) cover = imgUrl(cm[0]);
+      }
+
+      // Author
+      var author = labelValue(clean, "Author|Studio|Artist|Creator");
+      if (!author) {
+        var am = /"(?:author|studio)"\s*:\s*"([^"]{2,80})"/i.exec(json);
+        if (am) author = decodeHtml(am[1]);
+      }
+
+      // Status
+      var status = "Ongoing";
+      var sm = /Status\s*[:\-]?\s*(Ongoing|Completed|Hiatus|Dropped|Cancelled|Season End|Coming Soon)/i.exec(text) ||
+        /\b(Ongoing|Completed|Hiatus|Dropped|Cancelled|Season End)\b/i.exec(text);
+      if (sm) status = sm[1].charAt(0).toUpperCase() + sm[1].slice(1).toLowerCase();
+
+      // Genres
+      var genres = [], gseen = {}, gre = /<a\b[^>]*href="[^"]*[?&]genres=[^"]*"[^>]*>([\s\S]*?)<\/a>/gi, gm;
+      while ((gm = gre.exec(clean))) {
+        var g = decodeHtml(gm[1]).replace(/,$/, "").trim();
+        if (g && !gseen[g.toLowerCase()]) { gseen[g.toLowerCase()] = 1; genres.push(g); }
+      }
+
+      // Synopsis
+      var synopsis = "";
+      var sy = /<(?:div|p|section)[^>]*(?:id|class)="[^"]*(?:synopsis|description)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|p|section)>/i.exec(clean);
+      if (sy) synopsis = decodeHtml(sy[1]);
+      if (!synopsis) {
+        var sy2 = />\s*Synopsis\s*<\/[^>]+>([\s\S]{0,3000}?)<\/(?:div|section)>/i.exec(clean);
+        if (sy2) synopsis = decodeHtml(sy2[1]);
+      }
+      if (!synopsis) synopsis = decodeHtml(getMeta(html, "og:description") || getMeta(html, "description"));
+      if (!synopsis) {
+        var dm = /"(?:description|synopsis)"\s*:\s*"((?:[^"\\]|\\.)*)"/i.exec(json);
+        if (dm) synopsis = decodeHtml(dm[1].replace(/\\n/g, " "));
+      }
+
+      var plainPath = path;
+      var chapters = sortChaptersAsc(extractChapters(html, plainPath));
+
+      return {
+        title: title,
+        cover: cover,
+        author: author,
+        status: status,
+        genres: genres,
+        synopsis: synopsis,
+        chapters: chapters
+      };
+    } catch (e) {
+      return empty;
+    }
+  },
+
+  async getChapterImages(chapterId) {
+    try {
+      var html = await asuraFetch(absUrl(chapterId));
+      if (!html) return [];
+      var out = [], seen = {};
+      var push = function (u) {
+        u = absUrl(u);
+        if (!u || seen[u] || isJunkImage(u)) return;
+        seen[u] = 1;
+        out.push(u);
+      };
+
+      // 1) Standard <img> tags
+      var im, re = /<img\b[^>]*>/gi;
+      while ((im = re.exec(html))) push(imgUrl(im[0]));
+
+      // 2) Fallback: image URLs inside <script> JSON payloads
+      if (out.length < 2) {
+        var txt = unescapeJs(decodeEntities(html));
+        var re2 = /https?:\/\/[^\s"'\\<>()]+?\.(?:webp|jpe?g|png|avif)(?:\?[^\s"'\\<>()]*)?/gi, m2;
+        while ((m2 = re2.exec(txt))) push(m2[0]);
+      }
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
 };
