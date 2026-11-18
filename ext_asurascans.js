@@ -1,6 +1,6 @@
 // ID: ext_asurascans
 // NAME: Asura Scans
-// VERSION: 1.0.1
+// VERSION: 1.0.3
 // TYPE: comic
 // COLOR: #9333EA
 // ICON: https://asurascans.com
@@ -13,8 +13,6 @@ var ASURA_HEADERS = {
   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9"
 };
-
-// ---------------------------------------------------------------- helpers
 
 async function asuraFetch(url) {
   try {
@@ -143,8 +141,6 @@ function unwrapProp(v) {
   return v;
 }
 
-// ---------------------------------------------------------- list parsing
-
 function parseListFromHtml(html) {
   var map = {}, order = [];
   var re = /href\s*=\s*["']((?:https?:\/\/(?:www\.)?asurascans\.com)?\/comics\/([^\/"'?#]+))\/?["']/gi, m;
@@ -248,8 +244,6 @@ function buildBrowseUrl(page, queryKey, query, filters) {
   return ASURA_BASE + "/browse/comics?" + params.join("&");
 }
 
-// -------------------------------------------------------- detail parsing
-
 function labelValue(html, labels) {
   var re = new RegExp("(?:>|^)\\s*(?:" + labels + ")s?\\s*:?\\s*<\\/[^>]*>[\\s\\S]{0,250}?>\\s*([^<>]{2,80}?)\\s*<", "i");
   var m = re.exec(html);
@@ -285,12 +279,13 @@ function extractChapters(html, slug) {
     if (seen[id2]) continue;
     if (slug && id2.indexOf(slug + "/chapter/") !== 0) continue;
     seen[id2] = 1;
-chapters.push({ id: id2, title: "Chapter " + m2[2].replace(/-/g, "."), date: "" });
+    chapters.push({ id: id2, title: "Chapter " + m2[2].replace(/-/g, "."), date: "" });
+  }
+  return chapters;
 }
-return chapters;
-}
+
 function chapterNumber(ch) {
-var m = //chapter/([^/?#]+)/i.exec(ch.id);
+  var m = /\/chapter\/([^\/?#]+)/i.exec(ch.id);
 var seg = m ? m[1].replace(/^chapter-?/i, "") : "";
 if (/^\d+-\d+$/.test(seg)) seg = seg.replace("-", ".");
 var n = /^\d+(?:.\d+)?$/.test(seg) ? parseFloat(seg) : NaN;
@@ -307,14 +302,12 @@ var arr = chapters.map(function (c, i) { return { c: c, n: chapterNumber(c), i: 
 arr.sort(function (a, b) { return a.n !== b.n ? a.n - b.n : a.i - b.i; });
 return arr.map(function (x) { return x.c; });
 }
-// ------------------------------------------------------- image filtering
 function isJunkImage(u) {
 var l = String(u).toLowerCase();
 var bad = ["logo", "favicon", "avatar", "discord", "donate", "default-pp", "toraka", "patreon", "ko-fi", "badge"];
 for (var i = 0; i < bad.length; i++) if (l.indexOf(bad[i]) >= 0) return true;
 return /.(svg|gif|ico)(?|#|$)/.test(l);
 }
-// ------------------------------------------------------------- extension
 var KonmikExtension = {
 async getList(page, query, filters) {
 try {
